@@ -1,5 +1,9 @@
 import numpy as np
 import random
+
+
+
+
 GRID_ROWS = 5
 GRID_COLS = 5
 STATE_R = (0,0)
@@ -26,10 +30,30 @@ NUM_EPISODES = 1000
 """
 
 class State:
-    def __init__(self, taxi_loc, passenger_loc, drop_loc):
+    def __init__(self, taxi_loc, passenger_loc,passenger_sitting):
+        
         self.taxi_loc = taxi_loc
         self.passenger_loc = passenger_loc
+        self.passenger_sitting = passenger_sitting
+        self.finished = False
+        self.possible_states = []
         self.drop_loc = drop_loc
+    def val(self):
+        return (self.taxi_loc,self.passenger_loc,self.drop_loc,int(self.passenger_sitting))
+
+    def initialize(self) :
+        for i in range(GRID_ROWS):
+            for j in range(GRID_COLS):
+                for a in range(GRID_ROWS):
+                    for b in range(GRID_COLS):
+                        cur_state = State((i,j),(a,b),False)
+                        self.possible_states.append(cur_state) 
+        
+        for i in range(GRID_ROWS):
+            for j in range(GRID_COLS):
+                self.possible_states.append(State((i,j),(i,j),True))       
+
+
 
     def __str__(self):
         grid = ["+---------+","|R:_|_:_:G|","|_:_|_:_:_|","|_:_:_:_:_|","|_|_:_|_:_|","|Y|_:_|B:_|","+---------+"]
@@ -46,22 +70,24 @@ class State:
             result = result + grids + "\n"
         return result     
 
-
     def __eq__(self, other):
-        return self.taxi_loc == other.taxi_loc and self.passenger_loc == other.passenger_loc and self.drop_loc == other.drop_loc
-
-
-
-
+        return self.taxi_loc == other.taxi_loc and self.passenger_loc == other.passenger_loc and self.passenger_sitting == other.passenger_sitting
+  
+    def __hash__(self):
+        return hash((self.taxi_loc,self.passenger_loc,int(self.passenger_sitting)))
+  
     def get_reward(self, action):
         if action == "pickup":
             if self.taxi_loc == self.passenger_loc:
-                return -10
-            else:
                 return -1
+            else:
+                return -10
+
         elif action == "putdown":
-            if self.taxi_loc == self.drop_loc:
+            if self.taxi_loc == self.drop_loc and self.passenger_sitting:
                 return 20
+            elif self.passenger_sitting or self.taxi_loc == self.passenger_loc:
+                return -1    
             else:
                 return -10
         else:
@@ -108,12 +134,27 @@ class State:
             else:
                 taxi_loc = (taxi_loc[0],max(taxi_loc[1] - 1, 0 ))
 
+        elif action == "pickup":
+            if taxi_loc == passenger_loc and not self.passenger_sitting:
+                return State(taxi_loc,passenger_loc,True) 
+            else:    
+                return self
         else:
-            return self
+            if taxi_loc == drop_loc and self.passenger_sitting:
+                # self.passenger_sitting = False
+                # self.finished = True
+                stt = State(taxi_loc, taxi_loc, False)
+                stt.finished = True 
+                return stt
+            elif self.passenger_sitting:
+                return State(taxi_loc, taxi_loc, False)    
+            else:
+                return self
 
-        return State(taxi_loc, passenger_loc, drop_loc)                                           
+        if self.passenger_sitting:
+                return State(taxi_loc, taxi_loc, True)  
 
-
+        return State(taxi_loc, passenger_loc, self.passenger_sitting)                                           
 
 
 
@@ -121,81 +162,108 @@ class Agent:
     def __init__(self, state):
         self.state = state
         self.reward = 0
-        self.old_values = np.zeros(shape = (GRID_ROWS, GRID_COLS))
-        self.new_values = np.zeros(shape = (GRID_ROWS, GRID_COLS))
-        self.policy = np.array([["N" for i in range(GRID_ROWS)] for j in range(GRID_COLS)])
 
     def get_action(self):
         return np.random.choice(["N","S","E","W","pickup","putdown"],p=[0.1,0.1,0.3,0.3,0.1,0.1])
 
     def update(self, action_intended):
         action = self.state.choose_action(action_intended)
-        print(action_intended, action)
         self.reward += self.state.get_reward(action)
         self.state = self.state.next_state(action)
 
     def play(self):
         action_intended = self.get_action()
-        print(action_intended)
+        
         self.update(action_intended)
         return self.state, self.reward, action_intended
 
     def learn_optimal_values(self):
         converged = False
         num_iter = 0
+        self.old_values = [np.zeros(shape = (GRID_ROWS, GRID_COLS)) for i in range(2)]
+        self.new_values = [np.zeros(shape = (GRID_ROWS, GRID_COLS)) for i in range(2)]
+        
         while not converged:
             num_iter = num_iter + 1
+            for p_pick in [True, False]:
+                for i in range(GRID_ROWS):
+                    for j in range(GRID_COLS): 
+                        if p_pick:                      
+                            cur_state = State((i,j),(i,j),p_pick)
+                        else:
+                            cur_state = State((i,j),state.passenger_loc,p_pick)
+
+                        max_value = -100000
+                        print("cur_state:", cur_state.val())
+                        # print(cur_state)
+                        for action in ["N","S","E","W","pickup","putdown"]:
+                            value = 0
+                            if action == "pickup" :
+                                reward_val = cur_state.get_reward(action)
+                                next_state = cur_state.next_state(action)
+                                if next_state.passenger_sitting and not p_pick:
+                                    value = reward_val + GAMMA * self.old_values[1][next_state.taxi_loc[0],next_state.taxi_loc[1]]
+                                else:
+                                    value = reward_val + GAMMA * self.old_values[0][next_state.taxi_loc[0]][next_state.taxi_loc[1]]
+                                print(action,reward_val,value)
+                                # print(next_state)                          
+                            elif action == "putdown":
+                                reward_val = cur_state.get_reward(action)
+                                next_state = cur_state.next_state(action)
+                                if cur_state.taxi_loc == cur_state.drop_loc and p_pick:       
+                                    value = reward_val + GAMMA * self.old_values[1][next_state.taxi_loc[0]][next_state.taxi_loc[1]]
+                                    print(action,reward_val,value)
+                                else:
+                                    value = reward_val + GAMMA * self.old_values[0][next_state.taxi_loc[0]][next_state.taxi_loc[1]]
+                                print(action,reward_val,value)
+                                # print(next_state)
+                            else:
+                                for pos_action in ["N","S","E","W"]:
+                                    reward_val = cur_state.get_reward(pos_action)
+                                    next_state = cur_state.next_state(pos_action)
+                                    # if next_state == cur_state:
+                                    #     continue
+                                    print(action,pos_action,reward_val,value)    
+                                    if pos_action == action:
+                                        value += 0.85*(reward_val + GAMMA * self.old_values[int(p_pick)][next_state.taxi_loc[0]][next_state.taxi_loc[1]])
+                                    else:
+                                        value+= 0.15 * (reward_val + GAMMA * self.old_values[int(p_pick)][next_state.taxi_loc[0]][next_state.taxi_loc[1]])        
+                                    # print(next_state)
+                            if value > max_value:
+                                max_value = value
+                        
+                        self.new_values[int(p_pick)][i][j] = max_value
+                               
+                self.old_values[0] = self.new_values[0]
+                self.old_values[1] = self.new_values[1]
+            if num_iter > 6:
+                break
+    def extract_policy(self):
+        self.policy = np.array([[["A"for k in range(2)] for i in range(GRID_ROWS)] for j in range(GRID_COLS)])
+        for k in [True, False]:
             for i in range(GRID_ROWS):
                 for j in range(GRID_COLS):
-                    print(self.new_values)
-                    cur_state = State((i,j),state.passenger_loc,state.drop_loc)
+                    cur_state = State((i,j),state.passenger_loc,k)
                     max_value = -100000
                     for action in ["N","S","E","W","pickup","putdown"]:
                         value = 0
                         if action == "pickup" or action == "putdown":
-                            next_state = cur_state.next_state(action)
                             reward_val = cur_state.get_reward(action)
-                            value = reward_val + GAMMA * self.old_values[next_state.taxi_loc[0]][next_state.taxi_loc[1]]
+                            next_state = cur_state.next_state(action)
+                            value = reward_val + GAMMA * self.new_values[int(next_state.passenger_sitting)][next_state.taxi_loc[0]][next_state.taxi_loc[1]]
                         else:
                             for pos_action in ["N","S","E","W"]:
-                                next_state = cur_state.next_state(pos_action)
                                 reward_val = cur_state.get_reward(pos_action)
+                                next_state = cur_state.next_state(pos_action)
+                                # if next_state == cur_state:
+                                #     continue
                                 if pos_action == action:
-                                    value += 0.85*(reward_val + GAMMA * self.old_values[next_state.taxi_loc[0]][next_state.taxi_loc[1]])
+                                    value += 0.85*(reward_val + GAMMA * self.new_values[int(next_state.passenger_sitting)][next_state.taxi_loc[0]][next_state.taxi_loc[1]])
                                 else:
-                                    value+= 0.15 * (reward_val + GAMMA * self.old_values[next_state.taxi_loc[0]][next_state.taxi_loc[1]])        
-                        
+                                    value+= 0.15 * (reward_val + GAMMA * self.new_values[int(next_state.passenger_sitting)][next_state.taxi_loc[0]][next_state.taxi_loc[1]])        
                         if value > max_value:
                             max_value = value
-                    self.new_values[i][j] = max_value        
-            self.old_values = self.new_values
-            if num_iter > 10:
-                break
-    def extract_policy(self):
-        for i in range(GRID_ROWS):
-            for j in range(GRID_COLS):
-                cur_state = State((i,j),state.passenger_loc,state.drop_loc)
-                max_value = -100000
-                for action in ["N","S","E","W","pickup","putdown"]:
-                    value = 0
-                    if action == "pickup" or action == "putdown":
-                        next_state = cur_state.next_state(action)
-                        reward_val = cur_state.get_reward(action)
-                        value = reward_val + GAMMA * self.new_values[next_state.taxi_loc[0]][next_state.taxi_loc[1]]
-                    else:
-                        for pos_action in ["N","S","E","W"]:
-                            next_state = cur_state.next_state(pos_action)
-                            if next_state == cur_state:
-                                continue
-                            reward_val = cur_state.get_reward(pos_action)
-                            if pos_action == action:
-                                value += 0.85*(reward_val + GAMMA * self.new_values[next_state.taxi_loc[0]][next_state.taxi_loc[1]])
-                            else:
-                                value+= 0.15 * (reward_val + GAMMA * self.new_values[next_state.taxi_loc[0]][next_state.taxi_loc[1]])        
-                    if value > max_value:
-                        max_value = value
-                        print(action)
-                        self.policy[i][j] = action
+                            self.policy[i][j][int(k)] = action
         return self.policy
 
     def index_to_action(self, index):
@@ -228,27 +296,28 @@ class Agent:
                         action_num = np.random.choice([0,1,2,3,4,5],p=[1/6,1/6,1/6,1/6,1/6,1/6])
                     
                     action = self.index_to_action(action_num)
-                    next_state = self.state.next_state(action)
                     reward = self.state.get_reward(action)
+                    next_state = self.state.next_state(action)
                     self.q_table[i][j][action_num]  =   self.q_table[i][j][action_num] + ALPHA * (reward + GAMMA * np.max(self.q_table[next_state.taxi_loc[0]][next_state.taxi_loc[1]]) - self.q_table[i][j][action_num])  
                     self.state = next_state
 
 
 
 
-                        
-state = State((4,4), STATE_G, STATE_Y)
+drop_loc = STATE_Y                        
+state = State((4,4), STATE_G, False)
 agent = Agent(state)
 agent.learn_optimal_values()
-agent.extract_policy()
-print(agent.policy)
-for i in range(100):
-    print(state)
-    state = state.next_state(agent.policy[state.taxi_loc[0]][state.taxi_loc[1]])
-    if state.taxi_loc == state.drop_loc:
-        print("You reached your destination")
-        break
+print(agent.new_values[0])
+print(agent.new_values[1])
 
-print("YO")
-agent.q_learning()
-print(agent.q_table)    
+agent.extract_policy()
+print(agent.policy[:,:,0])
+print(agent.policy[:,:,1])
+
+# for i in range(100):
+#     print(state)
+#     state = state.next_state(agent.policy[state.taxi_loc[0]][state.taxi_loc[1]])
+#     if state.taxi_loc == state.drop_loc:
+#         print("You reached your destination")
+#         break
